@@ -1,5 +1,8 @@
-streamlit
-torch
-torchvision
-pandas
-Pillow
+streamlit~=1.51.0
+torch~=2.9.0
+torchvision~=0.24.0
+pandas~=2.3.3
+Pillow~=12.0.0
+opencv-python>=4.8.0
+ultralytics>=8.0.0
+numpy~=2.3.4

@@ -2,8 +2,11 @@ import streamlit as st
 import torch
 from torchvision import transforms
 from torchvision.models import resnet50, ResNet50_Weights
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import pandas as pd
+import cv2
+import numpy as np
+from ultralytics import YOLO
 
 # ====== Cấu hình trang ======
 st.set_page_config(
@@ -70,33 +73,117 @@ st.markdown("""
         transform: translateY(-2px);
         box-shadow: 0 6px 12px rgba(0,0,0,0.2);
     }
+    .detection-box {
+        background: #fff3cd;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 5px solid #ffc107;
+        margin: 1rem 0;
+    }
     </style>
 """, unsafe_allow_html=True)
 
 
-# ====== Load model ======
+# ====== Load models ======
 @st.cache_resource
-def load_model():
+def load_models():
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    MODEL_PATH = 'model.pth'
+
+    # Load ResNet50 model
+    RESNET_MODEL_PATH = 'model.pth'
     CSV_PATH = 'dataset_labels.csv'
 
     # Đọc danh sách nhãn
     df = pd.read_csv(CSV_PATH)
     class_names = sorted(df["label"].unique().tolist())
 
-    # Khởi tạo model
+    # Khởi tạo ResNet model
     num_classes = len(class_names)
-    model = resnet50(weights=ResNet50_Weights.DEFAULT)
-    in_features = model.fc.in_features
-    model.fc = torch.nn.Linear(in_features, num_classes)
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-    model.eval()
+    resnet_model = resnet50(weights=ResNet50_Weights.DEFAULT)
+    in_features = resnet_model.fc.in_features
+    resnet_model.fc = torch.nn.Linear(in_features, num_classes)
+    resnet_model.load_state_dict(torch.load(RESNET_MODEL_PATH, map_location=DEVICE))
+    resnet_model.eval()
 
-    return model, class_names, DEVICE
+    # Load YOLO model
+    YOLO_MODEL_PATH = 'yolo11n.pt'
+    yolo_model = YOLO(YOLO_MODEL_PATH)
+
+    return resnet_model, yolo_model, class_names, DEVICE
 
 
-# Tiền xử lý ảnh
+def draw_bounding_boxes(image, detections):
+    """Vẽ bounding box lên ảnh"""
+    img_draw = image.copy()
+    draw = ImageDraw.Draw(img_draw)
+
+    # Tạo font (nếu không có font, sẽ dùng font mặc định)
+    try:
+        font = ImageFont.truetype("arial.ttf", 20)
+    except:
+        font = ImageFont.load_default()
+
+    colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255)]
+
+    for idx, det in enumerate(detections):
+        box = det['box']
+        label = det['label']
+        confidence = det['confidence']
+
+        color = colors[idx % len(colors)]
+
+        # Vẽ bounding box
+        draw.rectangle(box, outline=color, width=3)
+
+        # Vẽ label và confidence
+        text = f"{label}: {confidence:.2f}"
+
+        # Vẽ background cho text
+        bbox = draw.textbbox((box[0], box[1] - 25), text, font=font)
+        draw.rectangle(bbox, fill=color)
+        draw.text((box[0], box[1] - 25), text, fill="white", font=font)
+
+    return img_draw
+
+
+def detect_with_yolo(yolo_model, image):
+    """Phát hiện đối tượng với YOLO"""
+    # Convert PIL to OpenCV format
+    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+    # Chạy YOLO detection
+    results = yolo_model(img_cv, conf=0.25)  # confidence threshold 0.25
+
+    detections = []
+
+    for result in results:
+        boxes = result.boxes
+        for box in boxes:
+            # Lấy tọa độ bounding box
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+
+            # Lấy confidence và class
+            confidence = float(box.conf[0].cpu().numpy())
+            cls = int(box.cls[0].cpu().numpy())
+            label = result.names[cls]
+
+            detections.append({
+                'box': (int(x1), int(y1), int(x2), int(y2)),
+                'label': label,
+                'confidence': confidence,
+                'class_id': cls
+            })
+
+    return detections
+
+
+def crop_detection_for_classification(image, box):
+    """Cắt vùng detection để phân loại bằng ResNet"""
+    x1, y1, x2, y2 = box
+    return image.crop((x1, y1, x2, y2))
+
+
+# Tiền xử lý ảnh cho ResNet
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -107,11 +194,20 @@ transform = transforms.Compose([
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/628/628283.png", width=150)
     st.title("📋 Hướng Dẫn")
+
+    # Chọn chế độ
+    detection_mode = st.radio(
+        "Chọn chế độ phát hiện:",
+        ["YOLO + Classification", "Classification Only"],
+        help="YOLO sẽ phát hiện vị trí bệnh, sau đó phân loại chi tiết"
+    )
+
     st.markdown("""
     ### Cách sử dụng:
     1. 📤 Tải lên ảnh cây trồng
-    2. ⏳ Đợi hệ thống phân tích
-    3. 📊 Xem kết quả dự đoán
+    2. 🎯 Chọn chế độ phát hiện
+    3. ⏳ Đợi hệ thống phân tích
+    4. 📊 Xem kết quả dự đoán
 
     ### Định dạng ảnh:
     - JPG, PNG, JPEG
@@ -126,19 +222,20 @@ with st.sidebar:
     st.markdown("### 🔧 Thông Tin Hệ Thống")
     device_type = "GPU (CUDA)" if torch.cuda.is_available() else "CPU"
     st.info(f"**Thiết bị:** {device_type}")
+    st.info(f"**Chế độ:** {detection_mode}")
 
 # ====== Main Content ======
 st.title("🌿 HỆ THỐNG NHẬN DẠNG BỆNH CÂY TRỒNG")
 st.markdown(
-    "<p style='text-align: center; color: #666; font-size: 1.2rem;'>Sử dụng AI để phát hiện bệnh và chăm sóc cây trồng hiệu quả</p>",
+    "<p style='text-align: center; color: #666; font-size: 1.2rem;'>Sử dụng AI (YOLO + ResNet50) để phát hiện và chẩn đoán bệnh trên cây trồng</p>",
     unsafe_allow_html=True)
 
-# Load model
+# Load models
 try:
-    model, class_names, DEVICE = load_model()
-    st.success("✅ Model đã được tải thành công!")
+    resnet_model, yolo_model, class_names, DEVICE = load_models()
 except Exception as e:
     st.error(f"❌ Lỗi khi tải model: {str(e)}")
+    st.info("💡 Lưu ý: Đảm bảo bạn đã có file 'model' trong thư mục dự án")
     st.stop()
 
 # Upload section
@@ -154,96 +251,172 @@ with col2:
 
 # Processing and Results
 if uploaded_file is not None:
-    col_img, col_result = st.columns(2)
+    image = Image.open(uploaded_file).convert("RGB")
 
-    with col_img:
-        st.markdown("### 📸 Ảnh Đầu Vào")
-        image = Image.open(uploaded_file).convert("RGB")
-        st.image(image, use_container_width=True, caption="Ảnh bạn đã tải lên")
+    if detection_mode == "YOLO + Classification":
+        # ====== YOLO Detection Mode ======
+        st.markdown("### 🎯 Phát hiện với YOLO + Phân loại với ResNet50")
 
-    with col_result:
-        st.markdown("### 🔍 Đang Phân Tích...")
+        col_original, col_detected = st.columns(2)
 
-        # Progress bar
-        progress_bar = st.progress(0)
-        for i in range(100):
-            progress_bar.progress(i + 1)
+        with col_original:
+            st.markdown("#### 📸 Ảnh Gốc")
+            st.image(image, use_container_width=True, caption="Ảnh bạn đã tải lên")
 
-        # Dự đoán
-        img_tensor = transform(image).unsqueeze(0).to(DEVICE)
+        with col_detected:
+            st.markdown("#### 🔍 Đang Phân Tích...")
+            progress_bar = st.progress(0)
 
-        with torch.no_grad():
-            outputs = model(img_tensor)
-            probs = torch.nn.functional.softmax(outputs, dim=1)
-            pred_idx = torch.argmax(probs, dim=1).item()
-            confidence = probs[0][pred_idx].item()
+            # YOLO Detection
+            progress_bar.progress(30)
+            detections = detect_with_yolo(yolo_model, image)
 
-        pred_label = class_names[pred_idx]
+            progress_bar.progress(60)
 
-        # Phân tích nhãn
-        if "_" in pred_label:
-            plant, disease = pred_label.split("_", 1)
-        else:
-            plant, disease = pred_label, "Không phát hiện bệnh"
+            if len(detections) > 0:
+                # Vẽ bounding boxes
+                img_with_boxes = draw_bounding_boxes(image, detections)
+                st.image(img_with_boxes, use_container_width=True,
+                         caption=f"Phát hiện {len(detections)} vùng bệnh")
+                progress_bar.progress(100)
+            else:
+                st.warning("⚠️ Không phát hiện được vùng bệnh nào")
+                progress_bar.progress(100)
 
-        # Hiển thị kết quả
-        st.markdown("<div class='result-card'>", unsafe_allow_html=True)
-        st.markdown("### 🎯 KẾT QUẢ PHÂN TÍCH")
+        # Hiển thị kết quả chi tiết
+        if len(detections) > 0:
+            st.markdown("---")
+            st.markdown("### 📊 Kết Quả Chi Tiết Từng Vùng")
 
-        st.markdown(f"""
-        <div class='metric-box'>
-            <h3>🌱 Loại Cây: {plant.capitalize()}</h3>
-        </div>
-        """, unsafe_allow_html=True)
+            for idx, det in enumerate(detections, 1):
+                with st.expander(f"🔬 Vùng {idx}: {det['label']} (Độ tin cậy: {det['confidence']:.2%})"):
+                    col_crop, col_class = st.columns(2)
 
-        st.markdown(f"""
-        <div class='metric-box'>
-            <h3>🦠 Tình Trạng: {disease.replace('_', ' ').title()}</h3>
-        </div>
-        """, unsafe_allow_html=True)
+                    with col_crop:
+                        # Hiển thị vùng đã crop
+                        cropped_img = crop_detection_for_classification(image, det['box'])
+                        st.image(cropped_img, caption=f"Vùng phát hiện {idx}",
+                                 use_container_width=True)
 
-        st.markdown(f"""
-        <div class='metric-box'>
-            <h3>📊 Độ Tin Cậy: {confidence * 100:.2f}%</h3>
-        </div>
-        """, unsafe_allow_html=True)
+                    with col_class:
+                        # Phân loại chi tiết với ResNet
+                        st.markdown("**🧬 Phân loại chi tiết:**")
 
-        st.markdown("</div>", unsafe_allow_html=True)
+                        img_tensor = transform(cropped_img).unsqueeze(0).to(DEVICE)
+                        with torch.no_grad():
+                            outputs = resnet_model(img_tensor)
+                            probs = torch.nn.functional.softmax(outputs, dim=1)
+                            pred_idx = torch.argmax(probs, dim=1).item()
+                            confidence = probs[0][pred_idx].item()
 
-    # Recommendations
-    st.markdown("---")
-    st.markdown("### 💡 Khuyến Nghị")
+                        pred_label = class_names[pred_idx]
 
-    if confidence > 0.8:
-        confidence_text = "Độ tin cậy cao - Kết quả đáng tin cậy"
-        confidence_color = "#4caf50"
-    elif confidence > 0.6:
-        confidence_text = "Độ tin cậy trung bình - Nên kiểm tra thêm"
-        confidence_color = "#ff9800"
+                        # Phân tích nhãn
+                        if "_" in pred_label:
+                            plant, disease = pred_label.split("_", 1)
+                        else:
+                            plant, disease = pred_label, "Không phát hiện bệnh"
+
+                        st.markdown(f"""
+                        <div class='detection-box'>
+                            <p><b>🌱 Loại cây:</b> {plant.capitalize()}</p>
+                            <p><b>🦠 Bệnh:</b> {disease.replace('_', ' ').title()}</p>
+                            <p><b>📊 Độ tin cậy:</b> {confidence * 100:.2f}%</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+
     else:
-        confidence_text = "Độ tin cậy thấp - Hãy tham khảo ý kiến chuyên gia"
-        confidence_color = "#f44336"
+        # ====== Classification Only Mode ======
+        col_img, col_result = st.columns(2)
 
-    st.markdown(f"""
-    <div class='info-box' style='border-left-color: {confidence_color}; background: {confidence_color}20;'>
-        <h4 style='color: {confidence_color};'>⚡ {confidence_text}</h4>
-        <p><b>Lời khuyên:</b></p>
-        <ul>
-            <li>Theo dõi cây trồng định kỳ</li>
-            <li>Tham khảo thêm ý kiến chuyên gia nếu cần</li>
-            <li>Áp dụng biện pháp phòng trừ phù hợp</li>
-        </ul>
-    </div>
-    """, unsafe_allow_html=True)
+        with col_img:
+            st.markdown("### 📸 Ảnh Đầu Vào")
+            st.image(image, use_container_width=True, caption="Ảnh bạn đã tải lên")
 
+        with col_result:
+            st.markdown("### 🔍 Đang Phân Tích...")
 
+            progress_bar = st.progress(0)
+            for i in range(100):
+                progress_bar.progress(i + 1)
+
+            # Dự đoán
+            img_tensor = transform(image).unsqueeze(0).to(DEVICE)
+
+            with torch.no_grad():
+                outputs = resnet_model(img_tensor)
+                probs = torch.nn.functional.softmax(outputs, dim=1)
+                pred_idx = torch.argmax(probs, dim=1).item()
+                confidence = probs[0][pred_idx].item()
+
+            pred_label = class_names[pred_idx]
+
+            # Phân tích nhãn
+            if "_" in pred_label:
+                plant, disease = pred_label.split("_", 1)
+            else:
+                plant, disease = pred_label, "Không phát hiện bệnh"
+
+            # Hiển thị kết quả
+            st.markdown("<div class='result-card'>", unsafe_allow_html=True)
+            st.markdown("### 🎯 KẾT QUẢ PHÂN TÍCH")
+
+            st.markdown(f"""
+            <div class='metric-box'>
+                <h3>🌱 Loại Cây: {plant.capitalize()}</h3>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown(f"""
+            <div class='metric-box'>
+                <h3>🦠 Tình Trạng: {disease.replace('_', ' ').title()}</h3>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown(f"""
+            <div class='metric-box'>
+                <h3>📊 Độ Tin Cậy: {confidence * 100:.2f}%</h3>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        # Recommendations
+        st.markdown("---")
+        st.markdown("### 💡 Khuyến Nghị")
+
+        if confidence > 0.8:
+            confidence_text = "Độ tin cậy cao - Kết quả đáng tin cậy"
+            confidence_color = "#4caf50"
+        elif confidence > 0.6:
+            confidence_text = "Độ tin cậy trung bình - Nên kiểm tra thêm"
+            confidence_color = "#ff9800"
+        else:
+            confidence_text = "Độ tin cậy thấp - Hãy tham khảo ý kiến chuyên gia"
+            confidence_color = "#f44336"
+
+        st.markdown(f"""
+        <div class='info-box' style='border-left-color: {confidence_color}; background: {confidence_color}20;'>
+            <h4 style='color: {confidence_color};'>⚡ {confidence_text}</h4>
+            <p><b>Lời khuyên:</b></p>
+            <ul>
+                <li>Theo dõi cây trồng định kỳ</li>
+                <li>Tham khảo thêm ý kiến chuyên gia nếu cần</li>
+                <li>Áp dụng biện pháp phòng trừ phù hợp</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
 
 else:
     # Welcome message
     st.markdown("""
     <div class='info-box'>
         <h3>👋 Chào mừng đến với hệ thống nhận dạng bệnh cây trồng!</h3>
-        <p>Hệ thống sử dụng AI (ResNet50) để phát hiện và chẩn đoán bệnh trên cây trồng.</p>
+        <p>Hệ thống sử dụng AI tiên tiến:</p>
+        <ul>
+            <li><b>YOLO</b>: Phát hiện vị trí bệnh với bounding box</li>
+            <li><b>ResNet50</b>: Phân loại chi tiết loại bệnh</li>
+        </ul>
         <p><b>Hãy tải lên một bức ảnh để bắt đầu!</b></p>
     </div>
     """, unsafe_allow_html=True)
@@ -252,20 +425,20 @@ else:
     st.markdown("### 📸 Ảnh Mẫu")
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.image("https://cdn-icons-png.flaticon.com/512/2917/2917995.png", caption="Ảnh rõ nét",
-                 use_container_width=True)
+        st.image("https://cdn-icons-png.flaticon.com/512/2917/2917995.png",
+                 caption="Ảnh rõ nét", use_container_width=True)
     with col2:
-        st.image("https://cdn-icons-png.flaticon.com/512/2917/2917994.png", caption="Đủ ánh sáng",
-                 use_container_width=True)
+        st.image("https://cdn-icons-png.flaticon.com/512/2917/2917994.png",
+                 caption="Đủ ánh sáng", use_container_width=True)
     with col3:
-        st.image("https://cdn-icons-png.flaticon.com/512/2917/2917993.png", caption="Chụp cận cảnh",
-                 use_container_width=True)
+        st.image("https://cdn-icons-png.flaticon.com/512/2917/2917993.png",
+                 caption="Chụp cận cảnh", use_container_width=True)
 
 # Footer
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 1rem;'>
     <p>🌿 Phát triển với ❤️ bởi Nhóm 9</p>
-    <p style='font-size: 0.9rem;'>Powered by PyTorch & Streamlit</p>
+    <p style='font-size: 0.9rem;'>Powered by YOLO, PyTorch & Streamlit</p>
 </div>
 """, unsafe_allow_html=True)
