@@ -399,7 +399,7 @@ else:
         <p>Hệ thống sử dụng AI tiên tiến:</p>
         <ul>
             <li><b>YOLO</b>: Phát hiện vị trí bệnh với bounding box</li>
-            <li><b>ResNet50</b>: Phân loại chi tiết loại bệnh</li>
+            <li><b>Faster-RCNN</b>: Phân loại chi tiết loại bệnh</li>
         </ul>
         <p><b>Hãy tải lên một bức ảnh để bắt đầu!</b></p>
     </div>
