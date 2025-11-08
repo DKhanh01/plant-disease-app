@@ -93,27 +93,27 @@ st.markdown("""
 def load_models():
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load ResNet50 model
-    RESNET_MODEL_PATH = 'model.pth'
+    # Load  model
+    MODEL_PATH = 'model.pth'
     CSV_PATH = 'dataset_labels.csv'
 
     # Đọc danh sách nhãn
     df = pd.read_csv(CSV_PATH)
     class_names = sorted(df["label"].unique().tolist())
 
-    # Khởi tạo ResNet model
+    # Khởi tạo  model
     num_classes = len(class_names)
-    resnet_model = resnet50(weights=ResNet50_Weights.DEFAULT)
-    in_features = resnet_model.fc.in_features
-    resnet_model.fc = torch.nn.Linear(in_features, num_classes)
-    resnet_model.load_state_dict(torch.load(RESNET_MODEL_PATH, map_location=DEVICE))
-    resnet_model.eval()
+    model = resnet50(weights=ResNet50_Weights.DEFAULT)
+    in_features = model.fc.in_features
+    model.fc = torch.nn.Linear(in_features, num_classes)
+    model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+    model.eval()
 
     # Load YOLO model
     YOLO_MODEL_PATH = 'yolo11n.pt'
     yolo_model = YOLO(YOLO_MODEL_PATH)
 
-    return resnet_model, yolo_model, class_names, DEVICE
+    return model, yolo_model, class_names, DEVICE
 
 
 def draw_bounding_boxes(image, detections):
@@ -181,12 +181,12 @@ def detect_with_yolo(yolo_model, image):
 
 
 def crop_detection_for_classification(image, box):
-    """Cắt vùng detection để phân loại bằng ResNet"""
+    """Cắt vùng detection để phân loại"""
     x1, y1, x2, y2 = box
     return image.crop((x1, y1, x2, y2))
 
 
-# Tiền xử lý ảnh cho ResNet
+# Tiền xử lý ảnh
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -230,12 +230,12 @@ with st.sidebar:
 # ====== Main Content ======
 st.title("🌿 HỆ THỐNG NHẬN DẠNG BỆNH CÂY TRỒNG")
 st.markdown(
-    "<p style='text-align: center; color: #666; font-size: 1.2rem;'>Sử dụng AI (YOLO + ResNet50) để phát hiện và chẩn đoán bệnh trên cây trồng</p>",
+    "<p style='text-align: center; color: #666; font-size: 1.2rem;'>Sử dụng AI (YOLO + Faster-RCNN) để phát hiện và chẩn đoán bệnh trên cây trồng</p>",
     unsafe_allow_html=True)
 
 # Load models
 try:
-    resnet_model, yolo_model, class_names, DEVICE = load_models()
+    model, yolo_model, class_names, DEVICE = load_models()
 except Exception as e:
     st.error(f"❌ Lỗi khi tải model: {str(e)}")
     st.info("💡 Lưu ý: Đảm bảo bạn đã có file 'model' trong thư mục dự án")
@@ -258,7 +258,7 @@ if uploaded_file is not None:
 
     if detection_mode == "YOLO + Classification":
         # ====== YOLO Detection Mode ======
-        st.markdown("### 🎯 Phát hiện với YOLO + Phân loại với ResNet50")
+        st.markdown("### 🎯 Phát hiện với YOLO + Phân loại với Faster-RCNN")
 
         col_original, col_detected = st.columns(2)
 
@@ -302,12 +302,12 @@ if uploaded_file is not None:
                                  use_container_width=True)
 
                     with col_class:
-                        # Phân loại chi tiết với ResNet
+                        # Phân loại chi tiết
                         st.markdown("**🧬 Phân loại chi tiết:**")
 
                         img_tensor = transform(cropped_img).unsqueeze(0).to(DEVICE)
                         with torch.no_grad():
-                            outputs = resnet_model(img_tensor)
+                            outputs = model(img_tensor)
                             probs = torch.nn.functional.softmax(outputs, dim=1)
                             pred_idx = torch.argmax(probs, dim=1).item()
 
@@ -345,7 +345,7 @@ if uploaded_file is not None:
             img_tensor = transform(image).unsqueeze(0).to(DEVICE)
 
             with torch.no_grad():
-                outputs = resnet_model(img_tensor)
+                outputs = model(img_tensor)
                 probs = torch.nn.functional.softmax(outputs, dim=1)
                 pred_idx = torch.argmax(probs, dim=1).item()
 
