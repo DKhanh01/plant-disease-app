@@ -132,15 +132,14 @@ def draw_bounding_boxes(image, detections):
     for idx, det in enumerate(detections):
         box = det['box']
         label = det['label']
-        confidence = det['confidence']
 
         color = colors[idx % len(colors)]
 
         # Vẽ bounding box
         draw.rectangle(box, outline=color, width=3)
 
-        # Vẽ label và confidence
-        text = f"{label}: {confidence:.2f}"
+        # Vẽ label (bỏ confidence)
+        text = f"{label}"
 
         # Vẽ background cho text
         bbox = draw.textbbox((box[0], box[1] - 25), text, font=font)
@@ -293,7 +292,7 @@ if uploaded_file is not None:
             st.markdown("### 📊 Kết Quả Chi Tiết Từng Vùng")
 
             for idx, det in enumerate(detections, 1):
-                with st.expander(f"🔬 Vùng {idx}: {det['label']} (Độ tin cậy: {det['confidence']:.2%})"):
+                with st.expander(f"🔬 Vùng {idx}: {det['label']}"):
                     col_crop, col_class = st.columns(2)
 
                     with col_crop:
@@ -311,7 +310,6 @@ if uploaded_file is not None:
                             outputs = resnet_model(img_tensor)
                             probs = torch.nn.functional.softmax(outputs, dim=1)
                             pred_idx = torch.argmax(probs, dim=1).item()
-                            confidence = probs[0][pred_idx].item()
 
                         pred_label = class_names[pred_idx]
 
@@ -325,7 +323,6 @@ if uploaded_file is not None:
                         <div class='detection-box'>
                             <p><b>🌱 Loại cây:</b> {plant.capitalize()}</p>
                             <p><b>🦠 Bệnh:</b> {disease.replace('_', ' ').title()}</p>
-                            <p><b>📊 Độ tin cậy:</b> {confidence * 100:.2f}%</p>
                         </div>
                         """, unsafe_allow_html=True)
 
@@ -351,7 +348,6 @@ if uploaded_file is not None:
                 outputs = resnet_model(img_tensor)
                 probs = torch.nn.functional.softmax(outputs, dim=1)
                 pred_idx = torch.argmax(probs, dim=1).item()
-                confidence = probs[0][pred_idx].item()
 
             pred_label = class_names[pred_idx]
 
@@ -377,31 +373,15 @@ if uploaded_file is not None:
             </div>
             """, unsafe_allow_html=True)
 
-            st.markdown(f"""
-            <div class='metric-box'>
-                <h3>📊 Độ Tin Cậy: {confidence * 100:.2f}%</h3>
-            </div>
-            """, unsafe_allow_html=True)
-
             st.markdown("</div>", unsafe_allow_html=True)
 
         # Recommendations
         st.markdown("---")
         st.markdown("### 💡 Khuyến Nghị")
 
-        if confidence > 0.8:
-            confidence_text = "Độ tin cậy cao - Kết quả đáng tin cậy"
-            confidence_color = "#4caf50"
-        elif confidence > 0.6:
-            confidence_text = "Độ tin cậy trung bình - Nên kiểm tra thêm"
-            confidence_color = "#ff9800"
-        else:
-            confidence_text = "Độ tin cậy thấp - Hãy tham khảo ý kiến chuyên gia"
-            confidence_color = "#f44336"
-
         st.markdown(f"""
-        <div class='info-box' style='border-left-color: {confidence_color}; background: {confidence_color}20;'>
-            <h4 style='color: {confidence_color};'>⚡ {confidence_text}</h4>
+        <div class='info-box'>
+            <h4 style='color: #4caf50;'>⚡ Kết quả phân tích</h4>
             <p><b>Lời khuyên:</b></p>
             <ul>
                 <li>Theo dõi cây trồng định kỳ</li>
