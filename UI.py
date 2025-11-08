@@ -1,12 +1,16 @@
-import streamlit as st
+import os
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
+
+import cv2
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+import pandas as pd
 import torch
 from torchvision import transforms
 from torchvision.models import resnet50, ResNet50_Weights
-from PIL import Image, ImageDraw, ImageFont
-import pandas as pd
-import cv2
-import numpy as np
 from ultralytics import YOLO
+import streamlit as st
 
 # ====== Cấu hình trang ======
 st.set_page_config(
